@@ -16,7 +16,10 @@ import {
   Activity,
   BarChart2,
   Eye,
+  GripHorizontal,
   Layers,
+  Maximize2,
+  Minimize2,
   Move,
   RotateCcw,
   ShieldAlert,
@@ -58,30 +61,42 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     null
   );
 
-  // Pan & Zoom state for draggable candlestick viewport
+  // Pan, Zoom, Stretch & Resize state for candlestick viewport
   const [windowSize, setWindowSize] = useState<number>(75);
   const [panOffset, setPanOffset] = useState<number>(0);
   const [priceOffset, setPriceOffset] = useState<number>(0);
+  const [priceZoom, setPriceZoom] = useState<number>(1);
+  const [chartHeight, setChartHeight] = useState<number>(440);
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isResizingHeight, setIsResizingHeight] = useState<boolean>(false);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{
     active: boolean;
+    mode: "pan" | "scale-y" | "scale-x";
     startClientX: number;
     startClientY: number;
     startPanOffset: number;
     startPriceOffset: number;
+    startPriceZoom: number;
+    startWindowSize: number;
     plotPxWidth: number;
     plotPxHeight: number;
     priceSpan: number;
   } | null>(null);
+  const resizeRef = useRef<{
+    active: boolean;
+    startClientY: number;
+    startHeight: number;
+  } | null>(null);
 
   const cacheKey = `${stock.ticker.toUpperCase()}__${interval}`;
 
-  // Reset pan/zoom when ticker or interval changes
+  // Reset pan/zoom/stretch when ticker or interval changes
   useEffect(() => {
     setPanOffset(0);
     setPriceOffset(0);
+    setPriceZoom(1);
     setWindowSize(75);
     setHoverIndex(null);
     setCursorSvgPos(null);
@@ -182,20 +197,22 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     const pad = (max - min) * 0.07 || 1;
     const bMin = min - pad;
     const bMax = max + pad;
+    const mid = (bMin + bMax) / 2;
+    const halfSpan = ((bMax - bMin) / 2) / Math.max(0.25, Math.min(4, priceZoom));
     return {
       baseMinPrice: bMin,
       baseMaxPrice: bMax,
-      minPrice: bMin + priceOffset,
-      maxPrice: bMax + priceOffset,
+      minPrice: mid - halfSpan + priceOffset,
+      maxPrice: mid + halfSpan + priceOffset,
     };
-  }, [visibleData, showSMA50, showSMA200, showLevels, vpvr, priceOffset]);
+  }, [visibleData, showSMA50, showSMA200, showLevels, vpvr, priceOffset, priceZoom]);
 
   const width = 880;
-  const height = 340;
+  const height = chartHeight;
   const padLeft = 14;
   const padRight = 78;
   const padTop = 18;
-  const padBottom = 28;
+  const padBottom = 26;
   const plotW = width - padLeft - padRight;
   const plotH = height - padTop - padBottom;
 
@@ -243,11 +260,13 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
   const isPannedOrZoomed =
     clampedPanOffset !== 0 ||
     Math.abs(priceOffset) > 0.001 ||
+    Math.abs(priceZoom - 1) > 0.01 ||
     effectiveWindowSize !== Math.min(75, Math.max(15, fullData.length));
 
   const resetView = useCallback(() => {
     setPanOffset(0);
     setPriceOffset(0);
+    setPriceZoom(1);
     setWindowSize(75);
   }, []);
 
@@ -298,15 +317,31 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     const plotPxWidth = rect.width * (plotW / width);
     const plotPxHeight = rect.height * (plotH / height);
 
+    const rawSvgX = ((e.clientX - rect.left) / Math.max(1, rect.width)) * width;
+    const rawSvgY = ((e.clientY - rect.top) / Math.max(1, rect.height)) * height;
+
+    // Dragging on the right Y-axis stretches/compresses vertical price scale;
+    // dragging on the bottom X-axis stretches/compresses horizontal candle count;
+    // dragging inside the plot area pans in 2D.
+    const mode: "pan" | "scale-y" | "scale-x" =
+      rawSvgX > width - padRight
+        ? "scale-y"
+        : rawSvgY > height - padBottom
+        ? "scale-x"
+        : "pan";
+
     dragRef.current = {
       active: true,
+      mode,
       startClientX: e.clientX,
       startClientY: e.clientY,
       startPanOffset: clampedPanOffset,
       startPriceOffset: priceOffset,
+      startPriceZoom: priceZoom,
+      startWindowSize: effectiveWindowSize,
       plotPxWidth: Math.max(1, plotPxWidth),
       plotPxHeight: Math.max(1, plotPxHeight),
-      priceSpan: Math.max(0.01, baseMaxPrice - baseMinPrice),
+      priceSpan: Math.max(0.01, maxPrice - minPrice),
     };
     setIsDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -321,6 +356,23 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
 
     const dx = e.clientX - drag.startClientX;
     const dy = e.clientY - drag.startClientY;
+
+    if (drag.mode === "scale-y") {
+      // Dragging up on price axis stretches candles taller; dragging down compresses
+      const factor = Math.exp(-dy / 140);
+      setPriceZoom(Math.min(4, Math.max(0.25, drag.startPriceZoom * factor)));
+      return;
+    }
+
+    if (drag.mode === "scale-x") {
+      // Dragging right/left on date axis stretches/compresses horizontal candle count
+      const factor = Math.exp(dx / 180);
+      const nextWin = Math.round(drag.startWindowSize * factor);
+      setWindowSize(
+        Math.min(Math.max(15, nextWin), Math.max(15, fullData.length))
+      );
+      return;
+    }
 
     const pxPerBar = drag.plotPxWidth / Math.max(1, effectiveWindowSize);
     const deltaBars = dx / Math.max(1, pxPerBar);
@@ -342,6 +394,38 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
         e.currentTarget.releasePointerCapture(e.pointerId);
       } catch {
         // Ignore if not captured
+      }
+    }
+  };
+
+  // Vertical resize handle handlers for stretching the chart panel height
+  const handleResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    resizeRef.current = {
+      active: true,
+      startClientY: e.clientY,
+      startHeight: chartHeight,
+    };
+    setIsResizingHeight(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = resizeRef.current;
+    if (!r || !r.active) return;
+    const dy = e.clientY - r.startClientY;
+    setChartHeight(Math.min(860, Math.max(300, Math.round(r.startHeight + dy))));
+  };
+
+  const handleResizePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (resizeRef.current?.active) {
+      resizeRef.current.active = false;
+      setIsResizingHeight(false);
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignore
       }
     }
   };
@@ -387,7 +471,13 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     return `${closeLinePath} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
   }, [closeLinePath, visibleData.length, plotH]);
 
-  // Sub-indicator geometry
+  // Dedicated Volume Sub-Chart geometry (strictly <= 100px height max)
+  const volH = 82;
+  const volPadTop = 6;
+  const volPadBottom = 6;
+  const volPlotH = volH - volPadTop - volPadBottom;
+
+  // Sub-indicator geometry (RSI / MACD)
   const subH = 120;
   const subPadTop = 12;
   const subPadBottom = 20;
@@ -421,6 +511,32 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     }
     return { maxAbsMacd: m * 1.15, maxVol: v * 1.1 };
   }, [visibleData]);
+
+  // Compute 20-period Volume Moving Average for the dedicated Volume sub-chart
+  const volMaValues = useMemo(() => {
+    return visibleData.map((_, idx) => {
+      const start = Math.max(0, idx - 19);
+      const slice = visibleData.slice(start, idx + 1);
+      const sum = slice.reduce((acc, item) => acc + item.volume, 0);
+      return sum / (slice.length || 1);
+    });
+  }, [visibleData]);
+
+  const volMaPath = useMemo(() => {
+    if (visibleData.length === 0) return "";
+    return volMaValues
+      .map((v, i) => {
+        const x = xForIndex(i);
+        const y = volPadTop + volPlotH - (v / (maxVol || 1)) * volPlotH;
+        return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ");
+  }, [volMaValues, visibleData.length, maxVol, volPlotH]);
+
+  const activeVolMa =
+    hoverIndex !== null && volMaValues[hoverIndex] !== undefined
+      ? volMaValues[hoverIndex]
+      : volMaValues[volMaValues.length - 1] ?? 0;
 
   const yForMacd = (val: number) =>
     subPadTop + subPlotH / 2 - (val / (maxAbsMacd || 1)) * (subPlotH / 2);
@@ -651,11 +767,30 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
               >
                 <ZoomOut className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setChartHeight((h) => (h >= 560 ? 440 : 620))
+                }
+                title={
+                  chartHeight >= 560
+                    ? "Restore standard chart height"
+                    : "Expand chart panel height"
+                }
+                aria-label="Toggle expanded chart height"
+                className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                {chartHeight >= 560 ? (
+                  <Minimize2 className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                ) : (
+                  <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+              </button>
               {isPannedOrZoomed && (
                 <button
                   type="button"
                   onClick={resetView}
-                  title="Reset pan and zoom (or double-click chart)"
+                  title="Reset pan, stretch, and zoom (or double-click chart)"
                   className="inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-medium text-emerald-300 transition hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                 >
                   <RotateCcw className="h-3 w-3" aria-hidden="true" />
@@ -666,7 +801,7 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
 
             <span className="hidden xl:inline-flex items-center gap-1 text-[11px] text-slate-400">
               <Move className="h-3 w-3 text-slate-500" aria-hidden="true" />
-              Drag chart to pan · Scroll to zoom
+              Drag to pan · Drag axes to stretch · Drag bottom edge to resize
             </span>
           </div>
 
@@ -1281,7 +1416,175 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
                 )}
               </g>
             )}
+
+            {/* Interactive Axis Stretch Hit Zones (Right Price Axis = Vertical Stretch, Bottom Date Axis = Horizontal Stretch) */}
+            <rect
+              x={width - padRight}
+              y={padTop}
+              width={padRight}
+              height={plotH}
+              fill="transparent"
+              className="cursor-ns-resize"
+            >
+              <title>Drag vertically to stretch or compress price scale</title>
+            </rect>
+            <rect
+              x={padLeft}
+              y={height - padBottom}
+              width={plotW}
+              height={padBottom}
+              fill="transparent"
+              className="cursor-ew-resize"
+            >
+              <title>Drag horizontally to stretch or compress candle density</title>
+            </rect>
           </svg>
+
+          {/* Drag-to-Resize Handle Bar for Stretching Candlestick Chart Panel Height */}
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Drag up or down to resize candlestick chart height"
+            title="Drag up or down to resize candlestick chart height"
+            onPointerDown={handleResizePointerDown}
+            onPointerMove={handleResizePointerMove}
+            onPointerUp={handleResizePointerUp}
+            onPointerCancel={handleResizePointerUp}
+            onDoubleClick={() => setChartHeight(440)}
+            className={`group mt-1 flex h-4 w-full cursor-ns-resize items-center justify-center rounded-md border border-transparent transition hover:border-slate-700/80 hover:bg-slate-800/60 ${
+              isResizingHeight ? "border-emerald-500/50 bg-emerald-500/10" : ""
+            }`}
+          >
+            <div className="flex items-center gap-1.5 text-[10px] text-slate-500 group-hover:text-slate-300">
+              <GripHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">
+                Drag to resize chart height ({chartHeight}px)
+              </span>
+            </div>
+          </div>
+
+          {/* Dedicated Synchronized Volume Chart Directly Under Main Chart (Max 100px Height) */}
+          <div className="mt-1 max-h-[100px] h-[92px] w-full overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/60 px-0 pt-1">
+            <div className="flex items-center justify-between px-3 text-[11px] tabular-nums text-slate-400">
+              <div className="flex items-center gap-3">
+                <span className="font-semibold uppercase tracking-wider text-slate-300">
+                  Volume
+                </span>
+                {activePoint && (
+                  <>
+                    <span>
+                      Bar:{" "}
+                      <strong
+                        className={
+                          activePoint.close >= activePoint.open
+                            ? "text-emerald-400"
+                            : "text-rose-400"
+                        }
+                      >
+                        {(activePoint.volume / 1_000_000).toFixed(2)}M
+                      </strong>
+                    </span>
+                    <span className="text-amber-300/90">
+                      MA(20): {(activeVolMa / 1_000_000).toFixed(2)}M
+                    </span>
+                  </>
+                )}
+              </div>
+              <span className="text-[10px] text-slate-500">
+                Peak: {(maxVol / 1.1 / 1_000_000).toFixed(1)}M
+              </span>
+            </div>
+
+            <svg
+              viewBox={`0 0 ${width} ${volH}`}
+              className="h-[72px] max-h-[76px] w-full overflow-visible"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label={`${stock.ticker} synchronized trading volume bars`}
+              onMouseMove={(e) => updateCursorFromPointer(e.clientX, e.clientY)}
+              onMouseLeave={() => {
+                if (!isDragging) {
+                  setHoverIndex(null);
+                  setCursorSvgPos(null);
+                }
+              }}
+            >
+              {/* Horizontal reference line at 50% max volume */}
+              <line
+                x1={padLeft}
+                y1={volPadTop + volPlotH * 0.5}
+                x2={width - padRight}
+                y2={volPadTop + volPlotH * 0.5}
+                stroke="#1e293b"
+                strokeDasharray="3 3"
+                strokeWidth="1"
+              />
+              <text
+                x={width - padRight + 8}
+                y={volPadTop + 8}
+                fill="#64748b"
+                fontSize="9.5"
+                className="tabular-nums"
+              >
+                {(maxVol / 1.1 / 1_000_000).toFixed(0)}M
+              </text>
+              <text
+                x={width - padRight + 8}
+                y={volPadTop + volPlotH * 0.5 + 3}
+                fill="#475569"
+                fontSize="9"
+                className="tabular-nums"
+              >
+                {(maxVol / 2.2 / 1_000_000).toFixed(0)}M
+              </text>
+
+              {/* Volume Histogram Bars aligned 1:1 with Main Candlestick X positions */}
+              {visibleData.map((d, i) => {
+                const x = xForIndex(i);
+                const barH = Math.max(1.5, (d.volume / (maxVol || 1)) * volPlotH);
+                const barW = Math.max(
+                  2.5,
+                  Math.min(10, plotW / visibleData.length - 2.2)
+                );
+                const isUp = d.close >= d.open;
+                const isHovered = hoverIndex === i;
+                return (
+                  <rect
+                    key={`${d.date}-mainvol-${i}`}
+                    x={x - barW / 2}
+                    y={volPadTop + volPlotH - barH}
+                    width={barW}
+                    height={barH}
+                    fill={isUp ? "#10b981" : "#f43f5e"}
+                    opacity={isHovered ? "1" : "0.68"}
+                    rx="0.5"
+                  />
+                );
+              })}
+
+              {/* 20-Period Volume Moving Average Line */}
+              <path
+                d={volMaPath}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth="1.3"
+                opacity="0.85"
+              />
+
+              {/* Synchronized Vertical Crosshair Line */}
+              {hoverIndex !== null && visibleData[hoverIndex] && (
+                <line
+                  x1={xForIndex(hoverIndex)}
+                  y1={0}
+                  x2={xForIndex(hoverIndex)}
+                  y2={volH}
+                  stroke="#94a3b8"
+                  strokeWidth="1"
+                  strokeDasharray="3 3"
+                />
+              )}
+            </svg>
+          </div>
         </div>
 
         {/* Sub-Indicator Selector & Panel (RSI / MACD / Volume) */}
