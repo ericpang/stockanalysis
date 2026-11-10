@@ -11,6 +11,7 @@ import { InvestmentReportView } from "@/components/reports/InvestmentReportView"
 import { CustomStockAnalyzer } from "@/components/custom/CustomStockAnalyzer";
 import { FinancialStatementsView } from "@/components/statements/FinancialStatementsView";
 import { IntrinsicValueView } from "@/components/valuation/IntrinsicValueView";
+import { TopNewsPanel } from "@/components/news/TopNewsPanel";
 import {
   Activity,
   BarChart3,
@@ -727,6 +728,7 @@ export function DayTradeDashboard({
         {/* Active Analysis Mode Workspace */}
         {analysisMode === "quick" && (
           <div className="space-y-6">
+            <TopNewsPanel stock={activeStock} />
             <FundamentalBreakdown stock={activeStock} compact />
             <TechnicalChart stock={activeStock} />
           </div>

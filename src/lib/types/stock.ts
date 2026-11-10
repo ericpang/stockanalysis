@@ -134,6 +134,15 @@ export interface PeerStock {
   debtToEquity: number;
 }
 
+export interface StockNewsItem {
+  id: string;
+  title: string;
+  publisher: string;
+  url: string;
+  publishedAt: string;
+  summary?: string;
+}
+
 export interface StockProfile {
   ticker: string;
   name: string;
@@ -175,6 +184,7 @@ export interface StockProfile {
     history: OHLCVPoint[];
   };
   peers: PeerStock[];
+  news?: StockNewsItem[];
   riskFactors: string[];
   bullCase: string[];
   bearCase: string[];
