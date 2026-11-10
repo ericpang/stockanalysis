@@ -471,13 +471,7 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     return `${closeLinePath} L${lastX},${bottomY} L${firstX},${bottomY} Z`;
   }, [closeLinePath, visibleData.length, plotH]);
 
-  // Dedicated Volume Sub-Chart geometry (strictly <= 100px height max)
-  const volH = 82;
-  const volPadTop = 6;
-  const volPadBottom = 6;
-  const volPlotH = volH - volPadTop - volPadBottom;
-
-  // Sub-indicator geometry (RSI / MACD)
+  // Sub-indicator geometry (RSI / MACD / Volume)
   const subH = 120;
   const subPadTop = 12;
   const subPadBottom = 20;
@@ -511,32 +505,6 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     }
     return { maxAbsMacd: m * 1.15, maxVol: v * 1.1 };
   }, [visibleData]);
-
-  // Compute 20-period Volume Moving Average for the dedicated Volume sub-chart
-  const volMaValues = useMemo(() => {
-    return visibleData.map((_, idx) => {
-      const start = Math.max(0, idx - 19);
-      const slice = visibleData.slice(start, idx + 1);
-      const sum = slice.reduce((acc, item) => acc + item.volume, 0);
-      return sum / (slice.length || 1);
-    });
-  }, [visibleData]);
-
-  const volMaPath = useMemo(() => {
-    if (visibleData.length === 0) return "";
-    return volMaValues
-      .map((v, i) => {
-        const x = xForIndex(i);
-        const y = volPadTop + volPlotH - (v / (maxVol || 1)) * volPlotH;
-        return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(" ");
-  }, [volMaValues, visibleData.length, maxVol, volPlotH]);
-
-  const activeVolMa =
-    hoverIndex !== null && volMaValues[hoverIndex] !== undefined
-      ? volMaValues[hoverIndex]
-      : volMaValues[volMaValues.length - 1] ?? 0;
 
   const yForMacd = (val: number) =>
     subPadTop + subPlotH / 2 - (val / (maxAbsMacd || 1)) * (subPlotH / 2);
@@ -1461,129 +1429,6 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
                 Drag to resize chart height ({chartHeight}px)
               </span>
             </div>
-          </div>
-
-          {/* Dedicated Synchronized Volume Chart Directly Under Main Chart (Max 100px Height) */}
-          <div className="mt-1 max-h-[100px] h-[92px] w-full overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/60 px-0 pt-1">
-            <div className="flex items-center justify-between px-3 text-[11px] tabular-nums text-slate-400">
-              <div className="flex items-center gap-3">
-                <span className="font-semibold uppercase tracking-wider text-slate-300">
-                  Volume
-                </span>
-                {activePoint && (
-                  <>
-                    <span>
-                      Bar:{" "}
-                      <strong
-                        className={
-                          activePoint.close >= activePoint.open
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }
-                      >
-                        {(activePoint.volume / 1_000_000).toFixed(2)}M
-                      </strong>
-                    </span>
-                    <span className="text-amber-300/90">
-                      MA(20): {(activeVolMa / 1_000_000).toFixed(2)}M
-                    </span>
-                  </>
-                )}
-              </div>
-              <span className="text-[10px] text-slate-500">
-                Peak: {(maxVol / 1.1 / 1_000_000).toFixed(1)}M
-              </span>
-            </div>
-
-            <svg
-              viewBox={`0 0 ${width} ${volH}`}
-              className="h-[72px] max-h-[76px] w-full overflow-visible"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label={`${stock.ticker} synchronized trading volume bars`}
-              onMouseMove={(e) => updateCursorFromPointer(e.clientX, e.clientY)}
-              onMouseLeave={() => {
-                if (!isDragging) {
-                  setHoverIndex(null);
-                  setCursorSvgPos(null);
-                }
-              }}
-            >
-              {/* Horizontal reference line at 50% max volume */}
-              <line
-                x1={padLeft}
-                y1={volPadTop + volPlotH * 0.5}
-                x2={width - padRight}
-                y2={volPadTop + volPlotH * 0.5}
-                stroke="#1e293b"
-                strokeDasharray="3 3"
-                strokeWidth="1"
-              />
-              <text
-                x={width - padRight + 8}
-                y={volPadTop + 8}
-                fill="#64748b"
-                fontSize="9.5"
-                className="tabular-nums"
-              >
-                {(maxVol / 1.1 / 1_000_000).toFixed(0)}M
-              </text>
-              <text
-                x={width - padRight + 8}
-                y={volPadTop + volPlotH * 0.5 + 3}
-                fill="#475569"
-                fontSize="9"
-                className="tabular-nums"
-              >
-                {(maxVol / 2.2 / 1_000_000).toFixed(0)}M
-              </text>
-
-              {/* Volume Histogram Bars aligned 1:1 with Main Candlestick X positions */}
-              {visibleData.map((d, i) => {
-                const x = xForIndex(i);
-                const barH = Math.max(1.5, (d.volume / (maxVol || 1)) * volPlotH);
-                const barW = Math.max(
-                  2.5,
-                  Math.min(10, plotW / visibleData.length - 2.2)
-                );
-                const isUp = d.close >= d.open;
-                const isHovered = hoverIndex === i;
-                return (
-                  <rect
-                    key={`${d.date}-mainvol-${i}`}
-                    x={x - barW / 2}
-                    y={volPadTop + volPlotH - barH}
-                    width={barW}
-                    height={barH}
-                    fill={isUp ? "#10b981" : "#f43f5e"}
-                    opacity={isHovered ? "1" : "0.68"}
-                    rx="0.5"
-                  />
-                );
-              })}
-
-              {/* 20-Period Volume Moving Average Line */}
-              <path
-                d={volMaPath}
-                fill="none"
-                stroke="#fbbf24"
-                strokeWidth="1.3"
-                opacity="0.85"
-              />
-
-              {/* Synchronized Vertical Crosshair Line */}
-              {hoverIndex !== null && visibleData[hoverIndex] && (
-                <line
-                  x1={xForIndex(hoverIndex)}
-                  y1={0}
-                  x2={xForIndex(hoverIndex)}
-                  y2={volH}
-                  stroke="#94a3b8"
-                  strokeWidth="1"
-                  strokeDasharray="3 3"
-                />
-              )}
-            </svg>
           </div>
         </div>
 
