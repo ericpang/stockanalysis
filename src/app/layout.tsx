@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "DayTrade — Multi-Market Stock Analysis Terminal",
+  title: "Stock Analysis",
   description:
     "Analyze stocks with fundamental and technical analysis across US, China A-shares, and Hong Kong markets. Generate institutional investment reports with key metrics.",
 };

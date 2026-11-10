@@ -46,7 +46,10 @@ jobs:
         env:
           STATIC_EXPORT: "true"
           NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-        run: npm run build
+        run: |
+          mkdir -p public
+          npm run build
+          if [ -f public/live-data.json ]; then cp public/live-data.json out/live-data.json; fi
 
       - name: Ensure .nojekyll exists in output
         run: touch ./out/.nojekyll

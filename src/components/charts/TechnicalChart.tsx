@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChartInterval,
   OHLCVPoint,
@@ -17,8 +17,12 @@ import {
   BarChart2,
   Eye,
   Layers,
+  Move,
+  RotateCcw,
   ShieldAlert,
   TrendingUp,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 
 interface TechnicalChartProps {
@@ -50,8 +54,38 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
   const [showVPVR, setShowVPVR] = useState(true);
   const [subIndicator, setSubIndicator] = useState<SubIndicator>("RSI");
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [cursorSvgPos, setCursorSvgPos] = useState<{ x: number; y: number } | null>(
+    null
+  );
+
+  // Pan & Zoom state for draggable candlestick viewport
+  const [windowSize, setWindowSize] = useState<number>(75);
+  const [panOffset, setPanOffset] = useState<number>(0);
+  const [priceOffset, setPriceOffset] = useState<number>(0);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<{
+    active: boolean;
+    startClientX: number;
+    startClientY: number;
+    startPanOffset: number;
+    startPriceOffset: number;
+    plotPxWidth: number;
+    plotPxHeight: number;
+    priceSpan: number;
+  } | null>(null);
 
   const cacheKey = `${stock.ticker.toUpperCase()}__${interval}`;
+
+  // Reset pan/zoom when ticker or interval changes
+  useEffect(() => {
+    setPanOffset(0);
+    setPriceOffset(0);
+    setWindowSize(75);
+    setHoverIndex(null);
+    setCursorSvgPos(null);
+  }, [stock.ticker, interval]);
 
   // Fetch real interval bars from Yahoo Finance when interval !== "D"
   useEffect(() => {
@@ -95,15 +129,31 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
     };
   }, [stock.ticker, interval, cacheKey, intervalCache]);
 
-  const visibleData: OHLCVPoint[] = useMemo(() => {
+  const fullData: OHLCVPoint[] = useMemo(() => {
     if (interval === "D") {
-      return stock.technical.history.slice(-90);
+      return stock.technical.history;
     }
     if (intervalCache[cacheKey] && intervalCache[cacheKey].length > 0) {
       return intervalCache[cacheKey];
     }
     return resampleBarsForInterval(stock.technical.history, interval);
   }, [stock.technical.history, interval, intervalCache, cacheKey]);
+
+  const effectiveWindowSize = Math.min(
+    Math.max(15, windowSize),
+    Math.max(15, fullData.length)
+  );
+  const maxPanOffset = Math.max(0, fullData.length - effectiveWindowSize);
+  const clampedPanOffset = Math.min(Math.max(0, Math.round(panOffset)), maxPanOffset);
+
+  const visibleData: OHLCVPoint[] = useMemo(() => {
+    if (fullData.length <= effectiveWindowSize) {
+      return fullData;
+    }
+    const endIdx = fullData.length - clampedPanOffset;
+    const startIdx = Math.max(0, endIdx - effectiveWindowSize);
+    return fullData.slice(startIdx, endIdx);
+  }, [fullData, effectiveWindowSize, clampedPanOffset]);
 
   const vpvr = useMemo(() => {
     return computeVolumeProfileAndLevels(visibleData, stock.price, 20);
@@ -114,7 +164,7 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
       ? visibleData[hoverIndex]
       : visibleData[visibleData.length - 1];
 
-  const { minPrice, maxPrice } = useMemo(() => {
+  const { baseMinPrice, baseMaxPrice, minPrice, maxPrice } = useMemo(() => {
     let min = Infinity;
     let max = -Infinity;
     for (const d of visibleData) {
@@ -130,8 +180,15 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
       max = Math.max(max, vpvr.r2 * 1.01);
     }
     const pad = (max - min) * 0.07 || 1;
-    return { minPrice: min - pad, maxPrice: max + pad };
-  }, [visibleData, showSMA50, showSMA200, showLevels, vpvr]);
+    const bMin = min - pad;
+    const bMax = max + pad;
+    return {
+      baseMinPrice: bMin,
+      baseMaxPrice: bMax,
+      minPrice: bMin + priceOffset,
+      maxPrice: bMax + priceOffset,
+    };
+  }, [visibleData, showSMA50, showSMA200, showLevels, vpvr, priceOffset]);
 
   const width = 880;
   const height = 340;
@@ -153,6 +210,141 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
 
   const yForPrice = (p: number) =>
     padTop + plotH - ((p - minPrice) / (maxPrice - minPrice || 1)) * plotH;
+
+  const priceForY = useCallback(
+    (svgY: number) => {
+      const ratio = (padTop + plotH - svgY) / (plotH || 1);
+      return minPrice + ratio * (maxPrice - minPrice);
+    },
+    [minPrice, maxPrice, plotH]
+  );
+
+  const cursorPrice = useMemo(() => {
+    if (!cursorSvgPos) return null;
+    return priceForY(cursorSvgPos.y);
+  }, [cursorSvgPos, priceForY]);
+
+  const isCursorOnCandle = useMemo(() => {
+    if (!cursorSvgPos || hoverIndex === null || !visibleData[hoverIndex]) {
+      return false;
+    }
+    const d = visibleData[hoverIndex];
+    const candleX = xForIndex(hoverIndex);
+    const candleW = Math.max(4, Math.min(10, plotW / visibleData.length));
+    const highY = yForPrice(d.high);
+    const lowY = yForPrice(d.low);
+    const withinX = Math.abs(cursorSvgPos.x - candleX) <= candleW;
+    const withinY =
+      cursorSvgPos.y >= Math.min(highY, lowY) - 4 &&
+      cursorSvgPos.y <= Math.max(highY, lowY) + 4;
+    return withinX && withinY;
+  }, [cursorSvgPos, hoverIndex, visibleData, plotW, minPrice, maxPrice]);
+
+  const isPannedOrZoomed =
+    clampedPanOffset !== 0 ||
+    Math.abs(priceOffset) > 0.001 ||
+    effectiveWindowSize !== Math.min(75, Math.max(15, fullData.length));
+
+  const resetView = useCallback(() => {
+    setPanOffset(0);
+    setPriceOffset(0);
+    setWindowSize(75);
+  }, []);
+
+  const handleZoom = useCallback(
+    (direction: "in" | "out") => {
+      setWindowSize((prev) => {
+        const step = Math.max(8, Math.round(prev * 0.22));
+        const next = direction === "in" ? prev - step : prev + step;
+        return Math.min(Math.max(15, next), Math.max(15, fullData.length));
+      });
+    },
+    [fullData.length]
+  );
+
+  const updateCursorFromPointer = useCallback(
+    (clientX: number, clientY: number) => {
+      const svg = svgRef.current;
+      if (!svg || visibleData.length === 0) return;
+      const rect = svg.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const rawSvgX = ((clientX - rect.left) / rect.width) * width;
+      const rawSvgY = ((clientY - rect.top) / rect.height) * height;
+
+      const clampedX = Math.min(Math.max(padLeft, rawSvgX), width - padRight);
+      const clampedY = Math.min(Math.max(padTop, rawSvgY), height - padBottom);
+
+      setCursorSvgPos({ x: clampedX, y: clampedY });
+
+      const relX = (clampedX - padLeft) / (plotW || 1);
+      const idx =
+        visibleData.length <= 1
+          ? 0
+          : Math.min(
+              visibleData.length - 1,
+              Math.max(0, Math.round(relX * (visibleData.length - 1)))
+            );
+      setHoverIndex(idx);
+    },
+    [visibleData.length, plotW, width, height, padLeft, padRight, padTop, padBottom]
+  );
+
+  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const plotPxWidth = rect.width * (plotW / width);
+    const plotPxHeight = rect.height * (plotH / height);
+
+    dragRef.current = {
+      active: true,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startPanOffset: clampedPanOffset,
+      startPriceOffset: priceOffset,
+      plotPxWidth: Math.max(1, plotPxWidth),
+      plotPxHeight: Math.max(1, plotPxHeight),
+      priceSpan: Math.max(0.01, baseMaxPrice - baseMinPrice),
+    };
+    setIsDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    updateCursorFromPointer(e.clientX, e.clientY);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    updateCursorFromPointer(e.clientX, e.clientY);
+
+    const drag = dragRef.current;
+    if (!drag || !drag.active) return;
+
+    const dx = e.clientX - drag.startClientX;
+    const dy = e.clientY - drag.startClientY;
+
+    const pxPerBar = drag.plotPxWidth / Math.max(1, effectiveWindowSize);
+    const deltaBars = dx / Math.max(1, pxPerBar);
+    const nextPan = Math.min(
+      maxPanOffset,
+      Math.max(0, drag.startPanOffset + deltaBars)
+    );
+    setPanOffset(nextPan);
+
+    const deltaPrice = (dy / drag.plotPxHeight) * drag.priceSpan;
+    setPriceOffset(drag.startPriceOffset + deltaPrice);
+  };
+
+  const handlePointerUpOrCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (dragRef.current?.active) {
+      dragRef.current.active = false;
+      setIsDragging(false);
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignore if not captured
+      }
+    }
+  };
 
   const sma50Path = useMemo(() => {
     return visibleData
@@ -434,6 +626,48 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
                 Area
               </button>
             </div>
+
+            {/* Drag / Zoom / Reset Controls */}
+            <div
+              className="inline-flex items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-950 p-0.5"
+              role="group"
+              aria-label="Chart zoom and pan controls"
+            >
+              <button
+                type="button"
+                onClick={() => handleZoom("in")}
+                title="Zoom In (fewer candles)"
+                aria-label="Zoom In"
+                className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                <ZoomIn className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleZoom("out")}
+                title="Zoom Out (more candles)"
+                aria-label="Zoom Out"
+                className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                <ZoomOut className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              {isPannedOrZoomed && (
+                <button
+                  type="button"
+                  onClick={resetView}
+                  title="Reset pan and zoom (or double-click chart)"
+                  className="inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-medium text-emerald-300 transition hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                >
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                  Reset
+                </button>
+              )}
+            </div>
+
+            <span className="hidden xl:inline-flex items-center gap-1 text-[11px] text-slate-400">
+              <Move className="h-3 w-3 text-slate-500" aria-hidden="true" />
+              Drag chart to pan · Scroll to zoom
+            </span>
           </div>
 
           {/* Overlay toggles */}
@@ -496,7 +730,7 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
           </div>
         </div>
 
-        {/* Live OHLCV Crosshair Readout */}
+        {/* Live OHLCV & Cursor Crosshair Readout */}
         {activePoint && (
           <div
             className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums text-slate-300"
@@ -506,6 +740,12 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
               {interval}
             </span>
             <span className="font-semibold text-white">{activePoint.date}</span>
+            {cursorPrice !== null && (
+              <span className="rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-semibold text-emerald-300">
+                Cursor: {sym}
+                {cursorPrice.toFixed(2)} · {activePoint.date}
+              </span>
+            )}
             <span>
               O:{" "}
               <strong className="text-slate-100">
@@ -553,20 +793,40 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
           </div>
         )}
 
-        {/* Main SVG Price Chart with VPVR & S/R Levels */}
+        {/* Main SVG Price Chart with Draggable Pan/Zoom, VPVR, S/R Levels & 2D Crosshair */}
         <div className="relative mt-2 select-none">
           <svg
+            ref={svgRef}
             viewBox={`0 0 ${width} ${height}`}
-            className="w-full overflow-visible"
+            className={`w-full overflow-visible touch-none ${
+              isDragging ? "cursor-grabbing" : "cursor-crosshair"
+            }`}
             role="img"
-            aria-label={`${stock.ticker} ${interval} price chart with Volume Profile and Support/Resistance levels`}
-            onMouseLeave={() => setHoverIndex(null)}
+            aria-label={`${stock.ticker} ${interval} draggable price chart with Volume Profile and Support/Resistance levels`}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUpOrCancel}
+            onPointerCancel={handlePointerUpOrCancel}
+            onDoubleClick={resetView}
+            onWheel={(e) => {
+              e.preventDefault();
+              handleZoom(e.deltaY < 0 ? "in" : "out");
+            }}
+            onMouseLeave={() => {
+              if (!isDragging) {
+                setHoverIndex(null);
+                setCursorSvgPos(null);
+              }
+            }}
           >
             <defs>
               <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#10b981" stopOpacity="0.28" />
                 <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
               </linearGradient>
+              <clipPath id="pricePlotClip">
+                <rect x={padLeft} y={padTop} width={plotW} height={plotH} />
+              </clipPath>
             </defs>
 
             {/* Horizontal grid lines + price axis labels */}
@@ -596,268 +856,258 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
               );
             })}
 
-            {/* Volume Profile Visible Range (VPVR) Overlay */}
-            {showVPVR && (
-              <g aria-label="Volume Profile Range Indicator">
-                {/* 70% Value Area background band (VAH to VAL) */}
-                <rect
-                  x={padLeft}
-                  y={yForPrice(vpvr.vah)}
-                  width={plotW}
-                  height={Math.max(
-                    2,
-                    yForPrice(vpvr.val) - yForPrice(vpvr.vah)
-                  )}
-                  fill="#0ea5e9"
-                  opacity="0.05"
-                />
+            {/* Clipped Plot Area for VPVR, S/R Levels, Candlesticks & Moving Averages */}
+            <g clipPath="url(#pricePlotClip)">
+              {/* Volume Profile Visible Range (VPVR) Overlay */}
+              {showVPVR && (
+                <g aria-label="Volume Profile Range Indicator">
+                  {/* 70% Value Area background band (VAH to VAL) */}
+                  <rect
+                    x={padLeft}
+                    y={yForPrice(vpvr.vah)}
+                    width={plotW}
+                    height={Math.max(
+                      2,
+                      yForPrice(vpvr.val) - yForPrice(vpvr.vah)
+                    )}
+                    fill="#0ea5e9"
+                    opacity="0.05"
+                  />
 
-                {/* Horizontal Volume Profile Histogram Bars (Anchored to Right Edge of Plot) */}
-                {vpvr.bins.map((bin, idx) => {
-                  const yTop = yForPrice(bin.priceHigh);
-                  const yBot = yForPrice(bin.priceLow);
-                  const barH = Math.max(2, Math.abs(yBot - yTop) - 1.2);
-                  const totalW = (bin.volumePct / 100) * vpvrMaxBarW;
-                  const buyRatio =
-                    bin.totalVolume > 0 ? bin.upVolume / bin.totalVolume : 0.5;
-                  const buyW = totalW * buyRatio;
-                  const sellW = totalW - buyW;
-                  const rightEdge = width - padRight;
-                  const opacity = bin.isPOC
-                    ? 0.65
-                    : bin.inValueArea
-                    ? 0.38
-                    : 0.18;
+                  {/* Horizontal Volume Profile Histogram Bars (Anchored to Right Edge of Plot) */}
+                  {vpvr.bins.map((bin, idx) => {
+                    const yTop = yForPrice(bin.priceHigh);
+                    const yBot = yForPrice(bin.priceLow);
+                    const barH = Math.max(2, Math.abs(yBot - yTop) - 1.2);
+                    const totalW = (bin.volumePct / 100) * vpvrMaxBarW;
+                    const buyRatio =
+                      bin.totalVolume > 0 ? bin.upVolume / bin.totalVolume : 0.5;
+                    const buyW = totalW * buyRatio;
+                    const sellW = totalW - buyW;
+                    const rightEdge = width - padRight;
+                    const opacity = bin.isPOC
+                      ? 0.65
+                      : bin.inValueArea
+                      ? 0.38
+                      : 0.18;
 
-                  return (
-                    <g key={idx}>
-                      {/* Buy Volume segment */}
-                      <rect
-                        x={rightEdge - totalW}
-                        y={Math.min(yTop, yBot)}
-                        width={buyW}
-                        height={barH}
-                        fill="#10b981"
-                        opacity={opacity}
-                      />
-                      {/* Sell Volume segment */}
-                      <rect
-                        x={rightEdge - sellW}
-                        y={Math.min(yTop, yBot)}
-                        width={sellW}
-                        height={barH}
-                        fill="#f43f5e"
-                        opacity={opacity}
-                      />
-                      {/* Highlight border on Point of Control (POC) bar */}
-                      {bin.isPOC && (
+                    return (
+                      <g key={idx}>
+                        {/* Buy Volume segment */}
                         <rect
                           x={rightEdge - totalW}
                           y={Math.min(yTop, yBot)}
-                          width={totalW}
+                          width={buyW}
                           height={barH}
-                          fill="none"
-                          stroke="#fbbf24"
-                          strokeWidth="1.2"
+                          fill="#10b981"
+                          opacity={opacity}
                         />
-                      )}
+                        {/* Sell Volume segment */}
+                        <rect
+                          x={rightEdge - sellW}
+                          y={Math.min(yTop, yBot)}
+                          width={sellW}
+                          height={barH}
+                          fill="#f43f5e"
+                          opacity={opacity}
+                        />
+                        {/* Highlight border on Point of Control (POC) bar */}
+                        {bin.isPOC && (
+                          <rect
+                            x={rightEdge - totalW}
+                            y={Math.min(yTop, yBot)}
+                            width={totalW}
+                            height={barH}
+                            fill="none"
+                            stroke="#fbbf24"
+                            strokeWidth="1.2"
+                          />
+                        )}
+                      </g>
+                    );
+                  })}
+
+                  {/* Point of Control (POC) Horizontal Magnet Line */}
+                  <line
+                    x1={padLeft}
+                    y1={yForPrice(vpvr.poc)}
+                    x2={width - padRight}
+                    y2={yForPrice(vpvr.poc)}
+                    stroke="#f59e0b"
+                    strokeWidth="1.5"
+                    strokeDasharray="6 3"
+                  />
+                  <text
+                    x={width - padRight - 6}
+                    y={yForPrice(vpvr.poc) - 5}
+                    textAnchor="end"
+                    fill="#fbbf24"
+                    fontSize="10"
+                    fontWeight="700"
+                  >
+                    POC {sym}
+                    {vpvr.poc.toFixed(2)}
+                  </text>
+                </g>
+              )}
+
+              {/* Key Support & Resistance Horizontal Lines (R2, R1, S1, S2) */}
+              {showLevels && (
+                <g aria-label="Support and Resistance Levels">
+                  {/* R2 Major Resistance */}
+                  <line
+                    x1={padLeft}
+                    y1={yForPrice(vpvr.r2)}
+                    x2={width - padRight}
+                    y2={yForPrice(vpvr.r2)}
+                    stroke="#e11d48"
+                    strokeWidth="1.1"
+                    strokeDasharray="3 3"
+                  />
+                  <text
+                    x={padLeft + 6}
+                    y={yForPrice(vpvr.r2) - 4}
+                    fill="#fda4af"
+                    fontSize="9.5"
+                    fontWeight="600"
+                  >
+                    R2 (Major) {sym}
+                    {vpvr.r2.toFixed(2)}
+                  </text>
+
+                  {/* R1 Immediate Resistance */}
+                  <line
+                    x1={padLeft}
+                    y1={yForPrice(vpvr.r1)}
+                    x2={width - padRight}
+                    y2={yForPrice(vpvr.r1)}
+                    stroke="#f43f5e"
+                    strokeWidth="1.3"
+                    strokeDasharray="5 4"
+                  />
+                  <text
+                    x={padLeft + 6}
+                    y={yForPrice(vpvr.r1) - 4}
+                    fill="#fb7185"
+                    fontSize="10"
+                    fontWeight="700"
+                  >
+                    R1 (Resistance) {sym}
+                    {vpvr.r1.toFixed(2)}
+                  </text>
+
+                  {/* S1 Immediate Support */}
+                  <line
+                    x1={padLeft}
+                    y1={yForPrice(vpvr.s1)}
+                    x2={width - padRight}
+                    y2={yForPrice(vpvr.s1)}
+                    stroke="#10b981"
+                    strokeWidth="1.3"
+                    strokeDasharray="5 4"
+                  />
+                  <text
+                    x={padLeft + 6}
+                    y={yForPrice(vpvr.s1) - 4}
+                    fill="#34d399"
+                    fontSize="10"
+                    fontWeight="700"
+                  >
+                    S1 (Support) {sym}
+                    {vpvr.s1.toFixed(2)}
+                  </text>
+
+                  {/* S2 Major Support */}
+                  <line
+                    x1={padLeft}
+                    y1={yForPrice(vpvr.s2)}
+                    x2={width - padRight}
+                    y2={yForPrice(vpvr.s2)}
+                    stroke="#059669"
+                    strokeWidth="1.1"
+                    strokeDasharray="3 3"
+                  />
+                  <text
+                    x={padLeft + 6}
+                    y={yForPrice(vpvr.s2) - 4}
+                    fill="#6ee7b7"
+                    fontSize="9.5"
+                    fontWeight="600"
+                  >
+                    S2 (Major) {sym}
+                    {vpvr.s2.toFixed(2)}
+                  </text>
+                </g>
+              )}
+
+              {/* Area or Candlesticks */}
+              {chartStyle === "area" ? (
+                <>
+                  <path d={closeAreaPath} fill="url(#areaGrad)" />
+                  <path
+                    d={closeLinePath}
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="2"
+                  />
+                </>
+              ) : (
+                visibleData.map((d, i) => {
+                  const x = xForIndex(i);
+                  const isUp = d.close >= d.open;
+                  const color = isUp ? "#10b981" : "#f43f5e";
+                  const highY = yForPrice(d.high);
+                  const lowY = yForPrice(d.low);
+                  const openY = yForPrice(d.open);
+                  const closeY = yForPrice(d.close);
+                  const bodyTop = Math.min(openY, closeY);
+                  const bodyH = Math.max(2, Math.abs(closeY - openY));
+                  const candleW = Math.max(
+                    2.5,
+                    Math.min(10, plotW / visibleData.length - 2.2)
+                  );
+
+                  return (
+                    <g key={`${d.date}-${i}`}>
+                      <line
+                        x1={x}
+                        y1={highY}
+                        x2={x}
+                        y2={lowY}
+                        stroke={color}
+                        strokeWidth="1.2"
+                      />
+                      <rect
+                        x={x - candleW / 2}
+                        y={bodyTop}
+                        width={candleW}
+                        height={bodyH}
+                        fill={color}
+                        rx="0.5"
+                      />
                     </g>
                   );
-                })}
+                })
+              )}
 
-                {/* Point of Control (POC) Horizontal Magnet Line */}
-                <line
-                  x1={padLeft}
-                  y1={yForPrice(vpvr.poc)}
-                  x2={width - padRight}
-                  y2={yForPrice(vpvr.poc)}
-                  stroke="#f59e0b"
-                  strokeWidth="1.5"
-                  strokeDasharray="6 3"
-                />
-                <text
-                  x={width - padRight - 6}
-                  y={yForPrice(vpvr.poc) - 5}
-                  textAnchor="end"
-                  fill="#fbbf24"
-                  fontSize="10"
-                  fontWeight="700"
-                >
-                  POC {sym}
-                  {vpvr.poc.toFixed(2)}
-                </text>
-              </g>
-            )}
-
-            {/* Key Support & Resistance Horizontal Lines (R2, R1, S1, S2) */}
-            {showLevels && (
-              <g aria-label="Support and Resistance Levels">
-                {/* R2 Major Resistance */}
-                <line
-                  x1={padLeft}
-                  y1={yForPrice(vpvr.r2)}
-                  x2={width - padRight}
-                  y2={yForPrice(vpvr.r2)}
-                  stroke="#e11d48"
-                  strokeWidth="1.1"
-                  strokeDasharray="3 3"
-                />
-                <text
-                  x={padLeft + 6}
-                  y={yForPrice(vpvr.r2) - 4}
-                  fill="#fda4af"
-                  fontSize="9.5"
-                  fontWeight="600"
-                >
-                  R2 (Major) {sym}
-                  {vpvr.r2.toFixed(2)}
-                </text>
-
-                {/* R1 Immediate Resistance */}
-                <line
-                  x1={padLeft}
-                  y1={yForPrice(vpvr.r1)}
-                  x2={width - padRight}
-                  y2={yForPrice(vpvr.r1)}
-                  stroke="#f43f5e"
-                  strokeWidth="1.3"
-                  strokeDasharray="5 4"
-                />
-                <text
-                  x={padLeft + 6}
-                  y={yForPrice(vpvr.r1) - 4}
-                  fill="#fb7185"
-                  fontSize="10"
-                  fontWeight="700"
-                >
-                  R1 (Resistance) {sym}
-                  {vpvr.r1.toFixed(2)}
-                </text>
-
-                {/* S1 Immediate Support */}
-                <line
-                  x1={padLeft}
-                  y1={yForPrice(vpvr.s1)}
-                  x2={width - padRight}
-                  y2={yForPrice(vpvr.s1)}
-                  stroke="#10b981"
-                  strokeWidth="1.3"
-                  strokeDasharray="5 4"
-                />
-                <text
-                  x={padLeft + 6}
-                  y={yForPrice(vpvr.s1) - 4}
-                  fill="#34d399"
-                  fontSize="10"
-                  fontWeight="700"
-                >
-                  S1 (Support) {sym}
-                  {vpvr.s1.toFixed(2)}
-                </text>
-
-                {/* S2 Major Support */}
-                <line
-                  x1={padLeft}
-                  y1={yForPrice(vpvr.s2)}
-                  x2={width - padRight}
-                  y2={yForPrice(vpvr.s2)}
-                  stroke="#059669"
-                  strokeWidth="1.1"
-                  strokeDasharray="3 3"
-                />
-                <text
-                  x={padLeft + 6}
-                  y={yForPrice(vpvr.s2) - 4}
-                  fill="#6ee7b7"
-                  fontSize="9.5"
-                  fontWeight="600"
-                >
-                  S2 (Major) {sym}
-                  {vpvr.s2.toFixed(2)}
-                </text>
-              </g>
-            )}
-
-            {/* Area or Candlesticks */}
-            {chartStyle === "area" ? (
-              <>
-                <path d={closeAreaPath} fill="url(#areaGrad)" />
+              {/* 200-MA & 50-MA Overlays */}
+              {showSMA200 && (
                 <path
-                  d={closeLinePath}
+                  d={sma200Path}
                   fill="none"
-                  stroke="#10b981"
-                  strokeWidth="2"
+                  stroke="#a78bfa"
+                  strokeWidth="1.8"
                 />
-              </>
-            ) : (
-              visibleData.map((d, i) => {
-                const x = xForIndex(i);
-                const isUp = d.close >= d.open;
-                const color = isUp ? "#10b981" : "#f43f5e";
-                const highY = yForPrice(d.high);
-                const lowY = yForPrice(d.low);
-                const openY = yForPrice(d.open);
-                const closeY = yForPrice(d.close);
-                const bodyTop = Math.min(openY, closeY);
-                const bodyH = Math.max(2, Math.abs(closeY - openY));
-                const candleW = Math.max(
-                  2.5,
-                  Math.min(8, plotW / visibleData.length - 2.5)
-                );
-
-                return (
-                  <g key={`${d.date}-${i}`}>
-                    <line
-                      x1={x}
-                      y1={highY}
-                      x2={x}
-                      y2={lowY}
-                      stroke={color}
-                      strokeWidth="1.2"
-                    />
-                    <rect
-                      x={x - candleW / 2}
-                      y={bodyTop}
-                      width={candleW}
-                      height={bodyH}
-                      fill={color}
-                      rx="0.5"
-                    />
-                  </g>
-                );
-              })
-            )}
-
-            {/* 200-MA & 50-MA Overlays */}
-            {showSMA200 && (
-              <path
-                d={sma200Path}
-                fill="none"
-                stroke="#a78bfa"
-                strokeWidth="1.8"
-              />
-            )}
-            {showSMA50 && (
-              <path
-                d={sma50Path}
-                fill="none"
-                stroke="#fbbf24"
-                strokeWidth="1.8"
-              />
-            )}
-
-            {/* Hover vertical guide line */}
-            {hoverIndex !== null && visibleData[hoverIndex] && (
-              <line
-                x1={xForIndex(hoverIndex)}
-                y1={padTop}
-                x2={xForIndex(hoverIndex)}
-                y2={height - padBottom}
-                stroke="#94a3b8"
-                strokeWidth="1"
-                strokeDasharray="2 2"
-              />
-            )}
+              )}
+              {showSMA50 && (
+                <path
+                  d={sma50Path}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth="1.8"
+                />
+              )}
+            </g>
 
             {/* Date Labels along X-Axis */}
             {[0, Math.floor(visibleData.length / 2), visibleData.length - 1].map(
@@ -886,22 +1136,151 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
               }
             )}
 
-            {/* Invisible interactive hit columns */}
-            {visibleData.map((d, i) => {
-              const colW = plotW / visibleData.length;
-              return (
-                <rect
-                  key={`${d.date}-hit-${i}`}
-                  x={xForIndex(i) - colW / 2}
-                  y={padTop}
-                  width={colW}
-                  height={plotH}
-                  fill="transparent"
-                  className="cursor-crosshair"
-                  onMouseEnter={() => setHoverIndex(i)}
+            {/* 2D Cursor Crosshair Lines + Axis Badges + Floating Price/Date Readout */}
+            {cursorSvgPos && hoverIndex !== null && visibleData[hoverIndex] && (
+              <g pointerEvents="none">
+                {/* Vertical crosshair line */}
+                <line
+                  x1={xForIndex(hoverIndex)}
+                  y1={padTop}
+                  x2={xForIndex(hoverIndex)}
+                  y2={height - padBottom}
+                  stroke="#94a3b8"
+                  strokeWidth="1"
+                  strokeDasharray="3 3"
                 />
-              );
-            })}
+
+                {/* Horizontal crosshair line */}
+                <line
+                  x1={padLeft}
+                  y1={cursorSvgPos.y}
+                  x2={width - padRight}
+                  y2={cursorSvgPos.y}
+                  stroke="#94a3b8"
+                  strokeWidth="1"
+                  strokeDasharray="3 3"
+                />
+
+                {/* Crosshair intersection dot */}
+                <circle
+                  cx={xForIndex(hoverIndex)}
+                  cy={cursorSvgPos.y}
+                  r="3"
+                  fill="#10b981"
+                  stroke="#020617"
+                  strokeWidth="1.5"
+                />
+
+                {/* Right Y-Axis Floating Price Badge at Cursor Y */}
+                {cursorPrice !== null && (
+                  <g
+                    transform={`translate(${width - padRight + 2}, ${Math.min(
+                      height - padBottom - 10,
+                      Math.max(padTop + 10, cursorSvgPos.y)
+                    )})`}
+                  >
+                    <rect
+                      x="0"
+                      y="-9"
+                      width={padRight - 4}
+                      height="18"
+                      rx="4"
+                      fill="#10b981"
+                    />
+                    <text
+                      x={(padRight - 4) / 2}
+                      y="3.5"
+                      textAnchor="middle"
+                      fill="#020617"
+                      fontSize="10"
+                      fontWeight="700"
+                      className="tabular-nums"
+                    >
+                      {sym}
+                      {cursorPrice.toFixed(2)}
+                    </text>
+                  </g>
+                )}
+
+                {/* Bottom X-Axis Floating Date/Time Badge at Cursor X */}
+                <g
+                  transform={`translate(${Math.min(
+                    width - padRight - 48,
+                    Math.max(padLeft + 48, xForIndex(hoverIndex))
+                  )}, ${height - padBottom + 3})`}
+                >
+                  <rect
+                    x="-48"
+                    y="0"
+                    width="96"
+                    height="18"
+                    rx="4"
+                    fill="#1e293b"
+                    stroke="#475569"
+                    strokeWidth="1"
+                  />
+                  <text
+                    x="0"
+                    y="12.5"
+                    textAnchor="middle"
+                    fill="#f8fafc"
+                    fontSize="10"
+                    fontWeight="600"
+                    className="tabular-nums"
+                  >
+                    {visibleData[hoverIndex].date}
+                  </text>
+                </g>
+
+                {/* Floating Tooltip near Cursor when not directly on a candle (or anywhere on plot) */}
+                {cursorPrice !== null && !isCursorOnCandle && (
+                  <g
+                    transform={`translate(${
+                      cursorSvgPos.x > width - padRight - 165
+                        ? cursorSvgPos.x - 154
+                        : cursorSvgPos.x + 12
+                    }, ${
+                      cursorSvgPos.y < padTop + 44
+                        ? cursorSvgPos.y + 10
+                        : cursorSvgPos.y - 42
+                    })`}
+                  >
+                    <rect
+                      x="0"
+                      y="0"
+                      width="144"
+                      height="34"
+                      rx="6"
+                      fill="#0f172a"
+                      fillOpacity="0.92"
+                      stroke="#334155"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x="8"
+                      y="13"
+                      fill="#34d399"
+                      fontSize="10"
+                      fontWeight="700"
+                      className="tabular-nums"
+                    >
+                      Price: {sym}
+                      {cursorPrice.toFixed(2)}
+                    </text>
+                    <text
+                      x="8"
+                      y="26"
+                      fill="#cbd5e1"
+                      fontSize="9.5"
+                      className="tabular-nums"
+                    >
+                      {visibleData[hoverIndex].date} (C: {sym}
+                      {visibleData[hoverIndex].close.toFixed(2)})
+                    </text>
+                  </g>
+                )}
+              </g>
+            )}
           </svg>
         </div>
 

@@ -33,15 +33,19 @@ import {
 
 interface DayTradeDashboardProps {
   initialStocks?: StockProfile[];
+  initialExtraStocks?: Record<string, StockProfile>;
   initialSyncedAt?: string | null;
 }
 
 export function DayTradeDashboard({
   initialStocks = STOCK_CATALOG,
+  initialExtraStocks = {},
   initialSyncedAt = null,
 }: DayTradeDashboardProps) {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [stocks, setStocks] = useState<StockProfile[]>(initialStocks);
+  const [extraStocks, setExtraStocks] =
+    useState<Record<string, StockProfile>>(initialExtraStocks);
   const [selectedTicker, setSelectedTicker] = useState<string>("AAPL");
   const [marketFilter, setMarketFilter] = useState<"ALL" | MarketCode>("ALL");
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("quick");
@@ -80,6 +84,9 @@ export function DayTradeDashboard({
             const data = await res.json();
             if (Array.isArray(data.stocks) && data.stocks.length > 0) {
               liveStocks = data.stocks;
+              if (data.extraStocks && typeof data.extraStocks === "object") {
+                setExtraStocks((prev) => ({ ...prev, ...data.extraStocks }));
+              }
               if (data.fetchedAt) {
                 snapshotTime = new Date(data.fetchedAt).toLocaleTimeString([], {
                   hour: "2-digit",
@@ -97,12 +104,12 @@ export function DayTradeDashboard({
       // 3. Try client-side Yahoo Finance fetch if neither endpoint returned data
       if (!liveStocks) {
         const settled = await Promise.allSettled(
-          STOCK_CATALOG.map((base) => fetchLiveStockProfile(base.ticker, base))
+          initialStocks.map((base) => fetchLiveStockProfile(base.ticker, base))
         );
         const anyFulfilled = settled.some((r) => r.status === "fulfilled");
         if (anyFulfilled) {
           liveStocks = settled.map((res, idx) =>
-            res.status === "fulfilled" ? res.value : STOCK_CATALOG[idx]
+            res.status === "fulfilled" ? res.value : initialStocks[idx]
           );
         }
       }
@@ -202,7 +209,19 @@ export function DayTradeDashboard({
             }
           }
         } catch {
-          // Fallback to client-side fetch on static GitHub Pages
+          // Fallback to pre-fetched extraStocks or client-side fetch on static GitHub Pages
+        }
+
+        // Check pre-fetched extraStocks dictionary (from build-time live Yahoo Finance snapshot)
+        if (!liveProfile) {
+          const normalized = clean.endsWith(".SS")
+            ? clean.replace(/\.SS$/, ".SH")
+            : clean;
+          if (extraStocks[normalized]) {
+            liveProfile = extraStocks[normalized];
+          } else if (extraStocks[clean]) {
+            liveProfile = extraStocks[clean];
+          }
         }
 
         if (!liveProfile) {
@@ -236,7 +255,7 @@ export function DayTradeDashboard({
         setIsFetchingTicker(false);
       }
     },
-    [analysisMode]
+    [analysisMode, extraStocks]
   );
 
   const filteredStocks = useMemo(() => {
@@ -383,7 +402,7 @@ export function DayTradeDashboard({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-base font-bold tracking-tight text-white">
-                  DayTrade
+                  Stock Analysis
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
                   <Radio
@@ -750,7 +769,7 @@ export function DayTradeDashboard({
       <footer className="mt-12 border-t border-slate-800/80 bg-slate-950 py-6 text-xs text-slate-400">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-3 px-4 sm:flex-row sm:px-6">
           <div>
-            <strong className="text-slate-300">DayTrade Equity Research</strong>{" "}
+            <strong className="text-slate-300">Stock Analysis</strong>{" "}
             — Powered by live Yahoo Finance market data,{" "}
             <code className="text-emerald-400">stock-analysis</code> &amp;{" "}
             <code className="text-sky-400">web-design-guidelines</code>.

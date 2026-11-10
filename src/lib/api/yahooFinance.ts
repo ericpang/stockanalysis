@@ -16,11 +16,21 @@ import {
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+function getServerCacheOption(): RequestInit {
+  if (
+    process.env.STATIC_EXPORT === "true" ||
+    process.env.GITHUB_ACTIONS === "true"
+  ) {
+    return {};
+  }
+  return { cache: "no-store" };
+}
+
 async function fetchYahooJson(url: string): Promise<any> {
   if (typeof window === "undefined") {
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
-      cache: "no-store",
+      ...getServerCacheOption(),
     });
     if (!res.ok) {
       throw new Error(`Yahoo fetch failed: ${res.status}`);
@@ -68,7 +78,7 @@ async function getYahooAuth(): Promise<{ cookie: string; crumb: string }> {
 
   const r1 = await fetch("https://fc.yahoo.com", {
     headers: { "User-Agent": USER_AGENT },
-    cache: "no-store",
+    ...getServerCacheOption(),
   });
   const setCookies = r1.headers.getSetCookie?.() || [];
   const cookie = setCookies.map((c) => c.split(";")[0]).join("; ");
@@ -78,7 +88,7 @@ async function getYahooAuth(): Promise<{ cookie: string; crumb: string }> {
       "User-Agent": USER_AGENT,
       Cookie: cookie,
     },
-    cache: "no-store",
+    ...getServerCacheOption(),
   });
 
   if (!r2.ok) {
@@ -437,7 +447,7 @@ export async function fetchQuoteSummary(
         "User-Agent": USER_AGENT,
         Cookie: cookie,
       },
-      cache: "no-store",
+      ...getServerCacheOption(),
     });
 
     if (!res.ok) return null;
@@ -463,7 +473,7 @@ export async function fetchBatchQuotes(
         "User-Agent": USER_AGENT,
         Cookie: cookie,
       },
-      cache: "no-store",
+      ...getServerCacheOption(),
     });
 
     if (!res.ok) return {};
