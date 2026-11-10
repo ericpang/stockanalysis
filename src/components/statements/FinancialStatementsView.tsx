@@ -6,6 +6,7 @@ import {
   StockProfile,
 } from "@/lib/types/stock";
 import { buildFallbackStatements } from "@/lib/analysis/engine";
+import { fetchFinancialStatements } from "@/lib/api/yahooFinance";
 import {
   BarChart3,
   Landmark,
@@ -43,16 +44,23 @@ export function FinancialStatementsView({
       )}&statements=${periodType}`,
       { cache: "no-store" }
     )
-      .then((r) => r.json())
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Static mode"))))
       .then((data) => {
+        if (Array.isArray(data.periods) && data.periods.length > 0) {
+          return data.periods as FinancialStatementPeriod[];
+        }
+        throw new Error("Empty periods");
+      })
+      .catch(() => fetchFinancialStatements(stock.ticker, periodType))
+      .then((periodsData) => {
         if (
           !cancelled &&
-          Array.isArray(data.periods) &&
-          data.periods.length > 0
+          Array.isArray(periodsData) &&
+          periodsData.length > 0
         ) {
           setCache((prev) => ({
             ...prev,
-            [cacheKey]: data.periods,
+            [cacheKey]: periodsData,
           }));
         }
       })

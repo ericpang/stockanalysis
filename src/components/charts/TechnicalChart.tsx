@@ -11,6 +11,7 @@ import {
   interpretRSI,
   resampleBarsForInterval,
 } from "@/lib/analysis/engine";
+import { fetchChartByInterval } from "@/lib/api/yahooFinance";
 import {
   Activity,
   BarChart2,
@@ -66,12 +67,19 @@ export function TechnicalChart({ stock }: TechnicalChartProps) {
       )}&interval=${encodeURIComponent(interval)}`,
       { cache: "no-store" }
     )
-      .then((r) => r.json())
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Static mode"))))
       .then((data) => {
-        if (!cancelled && Array.isArray(data.history) && data.history.length > 0) {
+        if (Array.isArray(data.history) && data.history.length > 0) {
+          return data.history as OHLCVPoint[];
+        }
+        throw new Error("Empty history");
+      })
+      .catch(() => fetchChartByInterval(stock.ticker, interval))
+      .then((history) => {
+        if (!cancelled && Array.isArray(history) && history.length > 0) {
           setIntervalCache((prev) => ({
             ...prev,
-            [cacheKey]: data.history,
+            [cacheKey]: history,
           }));
         }
       })

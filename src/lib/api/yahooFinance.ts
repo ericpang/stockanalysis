@@ -16,6 +16,39 @@ import {
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+async function fetchYahooJson(url: string): Promise<any> {
+  if (typeof window === "undefined") {
+    const res = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`Yahoo fetch failed: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // Browser environment (e.g., static GitHub Pages deployment): try public CORS proxies
+  const proxyUrls = [
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  ];
+
+  let lastError: unknown;
+  for (const proxyUrl of proxyUrls) {
+    try {
+      const res = await fetch(proxyUrl, { cache: "no-store" });
+      if (res.ok) {
+        return await res.json();
+      }
+      lastError = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Failed to fetch via CORS proxy");
+}
+
 interface YahooAuthCache {
   cookie: string;
   crumb: string;
@@ -25,6 +58,9 @@ interface YahooAuthCache {
 let authCache: YahooAuthCache | null = null;
 
 async function getYahooAuth(): Promise<{ cookie: string; crumb: string }> {
+  if (typeof window !== "undefined") {
+    throw new Error("Yahoo crumb auth requires server environment");
+  }
   const now = Date.now();
   if (authCache && authCache.expiresAt > now) {
     return { cookie: authCache.cookie, crumb: authCache.crumb };
@@ -131,16 +167,7 @@ export async function fetchChartBars(yahooSym: string): Promise<{
     yahooSym
   )}?interval=1d&range=1y`;
 
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new Error(`Chart fetch failed for ${yahooSym}: ${res.status}`);
-  }
-
-  const data = await res.json();
+  const data = await fetchYahooJson(url);
   const result = data?.chart?.result?.[0];
   if (!result) {
     throw new Error(`No chart data returned for ${yahooSym}`);
@@ -209,16 +236,7 @@ export async function fetchChartByInterval(
     yahooSym
   )}?interval=${cfg.yfInterval}&range=${cfg.yfRange}`;
 
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new Error(`Interval chart fetch failed for ${yahooSym}: ${res.status}`);
-  }
-
-  const data = await res.json();
+  const data = await fetchYahooJson(url);
   const result = data?.chart?.result?.[0];
   if (!result) {
     throw new Error(`No interval chart data for ${yahooSym}`);
@@ -302,16 +320,7 @@ export async function fetchFinancialStatements(
     yahooSym
   )}?type=${keys.join(",")}&period1=1609459200&period2=1924905600`;
 
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new Error(`Timeseries fetch failed for ${yahooSym}: ${res.status}`);
-  }
-
-  const json = await res.json();
+  const json = await fetchYahooJson(url);
   const results: Array<Record<string, any>> = json?.timeseries?.result || [];
 
   const byDate: Record<string, Record<string, number>> = {};

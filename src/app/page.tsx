@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MARKET_LABELS, STOCK_CATALOG } from "@/lib/data/stocks";
+import { fetchLiveStockProfile } from "@/lib/api/yahooFinance";
 import { AnalysisMode, MarketCode, StockProfile } from "@/lib/types/stock";
 import { FundamentalBreakdown } from "@/components/metrics/FundamentalBreakdown";
 import { TechnicalChart } from "@/components/charts/TechnicalChart";
@@ -47,19 +48,42 @@ export default function DayTradeApp() {
     setIsSyncing(true);
     setFetchError(null);
     try {
-      const res = await fetch("/api/stock", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (Array.isArray(data.stocks) && data.stocks.length > 0) {
+      let liveStocks: StockProfile[] | null = null;
+      try {
+        const res = await fetch("/api/stock", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.stocks) && data.stocks.length > 0) {
+            liveStocks = data.stocks;
+          }
+        }
+      } catch {
+        // Static hosting fallback below
+      }
+
+      if (!liveStocks) {
+        const settled = await Promise.allSettled(
+          STOCK_CATALOG.map((base) => fetchLiveStockProfile(base.ticker, base))
+        );
+        const anyFulfilled = settled.some((r) => r.status === "fulfilled");
+        if (anyFulfilled) {
+          liveStocks = settled.map((res, idx) =>
+            res.status === "fulfilled" ? res.value : STOCK_CATALOG[idx]
+          );
+        }
+      }
+
+      if (liveStocks && liveStocks.length > 0) {
+        const syncedList = liveStocks;
         setStocks((prev) => {
           const updatedMap = new Map<string, StockProfile>(
-            data.stocks.map((s: StockProfile) => [s.ticker.toUpperCase(), s])
+            syncedList.map((s: StockProfile) => [s.ticker.toUpperCase(), s])
           );
           const merged = prev.map(
             (existing) =>
               updatedMap.get(existing.ticker.toUpperCase()) || existing
           );
-          for (const s of data.stocks as StockProfile[]) {
+          for (const s of syncedList) {
             if (
               !merged.some(
                 (m) => m.ticker.toUpperCase() === s.ticker.toUpperCase()
@@ -130,15 +154,26 @@ export default function DayTradeApp() {
       setIsFetchingTicker(true);
       setFetchError(null);
       try {
-        const res = await fetch(
-          `/api/stock?ticker=${encodeURIComponent(clean)}`,
-          { cache: "no-store" }
-        );
-        const data = await res.json();
-        if (!res.ok || !data.stock) {
-          throw new Error(data.error || `Ticker ${clean} not found`);
+        let liveProfile: StockProfile | null = null;
+        try {
+          const res = await fetch(
+            `/api/stock?ticker=${encodeURIComponent(clean)}`,
+            { cache: "no-store" }
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.stock) {
+              liveProfile = data.stock;
+            }
+          }
+        } catch {
+          // Fallback to client-side fetch on static GitHub Pages
         }
-        const liveProfile: StockProfile = data.stock;
+
+        if (!liveProfile) {
+          liveProfile = await fetchLiveStockProfile(clean);
+        }
+
         setStocks((prev) => {
           const exists = prev.some(
             (s) => s.ticker.toUpperCase() === liveProfile.ticker.toUpperCase()
