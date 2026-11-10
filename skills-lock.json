@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "stock-analysis": {
+      "source": "claude-office-skills/skills",
+      "sourceType": "github",
+      "skillPath": "stock-analysis/SKILL.md",
+      "computedHash": "61654bc26d74ae0f920b9c20a42e49bab7e058ad9a6644d8fcc211c43e47dfc6"
+    },
+    "web-design-guidelines": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/web-design-guidelines/SKILL.md",
+      "computedHash": "a6a44d5498f7e8f68289902f3dedfc6f38ae0cee1e96527c80724cf27f727c2a"
+    }
+  }
+}
