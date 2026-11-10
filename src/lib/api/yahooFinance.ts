@@ -17,10 +17,7 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 function getServerCacheOption(): RequestInit {
-  if (
-    process.env.STATIC_EXPORT === "true" ||
-    process.env.GITHUB_ACTIONS === "true"
-  ) {
+  if (process.env.STATIC_EXPORT === "true") {
     return {};
   }
   return { cache: "no-store" };

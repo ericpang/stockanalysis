@@ -40,13 +40,8 @@ const EXTRA_SEARCHABLE_TICKERS = [
 ];
 
 export default async function DayTradePage() {
-  const uniqueExtraTickers = Array.from(
-    new Set(
-      EXTRA_SEARCHABLE_TICKERS.map((t) => t.toUpperCase()).filter(
-        (t) => !STOCK_CATALOG.some((c) => c.ticker.toUpperCase() === t)
-      )
-    )
-  );
+  const isStaticExport = process.env.STATIC_EXPORT === "true";
+
   const settledCatalog = await Promise.allSettled(
     STOCK_CATALOG.map((base) => fetchLiveStockProfile(base.ticker, base))
   );
@@ -55,34 +50,44 @@ export default async function DayTradePage() {
     res.status === "fulfilled" ? res.value : STOCK_CATALOG[idx]
   );
 
-  // Also pre-fetch popular searchable tickers in batches for static GitHub Pages lookup
   const extraStocksMap: Record<string, StockProfile> = {};
-  const settledExtra = await Promise.allSettled(
-    uniqueExtraTickers.map((ticker) => fetchLiveStockProfile(ticker))
-  );
-  for (const res of settledExtra) {
-    if (res.status === "fulfilled" && res.value) {
-      extraStocksMap[res.value.ticker.toUpperCase()] = res.value;
-    }
-  }
-
   const nowIso = new Date().toISOString();
   const initialSyncedAt = `${nowIso.slice(11, 19)} UTC`;
 
-  // Write static snapshot to public/live-data.json so GitHub Pages static export serves ./live-data.json
-  try {
-    const publicDir = path.join(process.cwd(), "public");
-    fs.mkdirSync(publicDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(publicDir, "live-data.json"),
-      JSON.stringify({
-        stocks: liveStocks,
-        extraStocks: extraStocksMap,
-        fetchedAt: nowIso,
-      })
+  // Only pre-fetch the extended static dictionary when building for static GitHub Pages;
+  // on Vercel / Node servers, /api/stock dynamically fetches any ticker on demand.
+  if (isStaticExport) {
+    const uniqueExtraTickers = Array.from(
+      new Set(
+        EXTRA_SEARCHABLE_TICKERS.map((t) => t.toUpperCase()).filter(
+          (t) => !STOCK_CATALOG.some((c) => c.ticker.toUpperCase() === t)
+        )
+      )
     );
-  } catch {
-    // Ignore read-only filesystem errors if any
+
+    const settledExtra = await Promise.allSettled(
+      uniqueExtraTickers.map((ticker) => fetchLiveStockProfile(ticker))
+    );
+    for (const res of settledExtra) {
+      if (res.status === "fulfilled" && res.value) {
+        extraStocksMap[res.value.ticker.toUpperCase()] = res.value;
+      }
+    }
+
+    try {
+      const publicDir = path.join(process.cwd(), "public");
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(publicDir, "live-data.json"),
+        JSON.stringify({
+          stocks: liveStocks,
+          extraStocks: extraStocksMap,
+          fetchedAt: nowIso,
+        })
+      );
+    } catch {
+      // Ignore read-only filesystem errors if any
+    }
   }
 
   return (
