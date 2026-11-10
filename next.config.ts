@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
     ? {
         output: "export",
         trailingSlash: true,
-        pageExtensions: ["tsx", "jsx"],
+        pageExtensions: ["tsx", "jsx", "js"],
         basePath: basePath || undefined,
         assetPrefix: basePath || undefined,
         images: {

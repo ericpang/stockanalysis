@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - master
+  schedule:
+    # Refresh live Yahoo Finance market data on GitHub Pages every 6 hours on weekdays
+    - cron: "0 */6 * * 1-5"
   workflow_dispatch:
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
